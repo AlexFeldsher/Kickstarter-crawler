@@ -4,36 +4,48 @@ import json
 import time
 from collections import OrderedDict
 from datetime import datetime
-import logging as log
+import logging
 import requests
-import html2text
+# import html2text
 import argparse
 from bs4 import BeautifulSoup
 
 
-log.basicConfig(level=log.DEBUG)
-log.getLogger("requests").setLevel(log.WARNING)
-log.getLogger("urllib3").setLevel(log.WARNING)
+log = logging.getLogger(__name__)
+handler = logging.StreamHandler()
+log.addHandler(handler)
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 PROJECTS = 'projects'
 RECORDS = 'records'
 RECORD = 'record'
 REWARDS = 'rewards'
 REWARD = 'reward'
-NO_REWARD_PLEDGE = 'Make a pledge without a reward'
 
-CATEGORY_ID = '16'
-SORT = 'magic'
+CATEGORY_ID = 16    # technology
+# SORT = 'magic'
+# SORT = 'end_date'
+SORT = 'popularity'
 FORMAT = 'json'
-PAGE = '1'
 
-LINK = 'https://www.kickstarter.com/discover/advanced?category_id=' + \
-        CATEGORY_ID + '&sort=' + SORT + '&page=' + PAGE + '&format=' + FORMAT
+LINK_SKELETON = 'https://www.kickstarter.com/discover/advanced?category_id={:d}&sort={}&page={:d}&format={}'
+
+
+def discover_url_iter() -> str:
+    """ Iterator for kickstarter discover pages """
+    page = 0
+    while True:
+        link = LINK_SKELETON.format(CATEGORY_ID, SORT, page, FORMAT)
+        page += 1
+        log.debug('Discover link: %s', link)
+        yield link
 
 
 def get_digits(string: str) -> int:
     """ Returns only the digits from a given string """
     return int(''.join(filter(str.isdigit, string)))
+
 
 def project_id(**kargs) -> int:
     """ Returns a unique id """
@@ -71,9 +83,9 @@ def project_title(**kargs) -> str:
 def project_text(**kargs) -> str:
     """ Returns the project's page text """
     html = kargs['html']
-    clean_text = html2text.html2text(html)
+    # clean_text = html2text.html2text(html)
     log.debug('Got text...')
-    return clean_text
+    return html
 
 
 def project_pledged(**kargs) -> float:
@@ -152,6 +164,7 @@ def pledge_total_backers(pledge) -> int:
     """
     Returns the pledge backers limit
     -1 = no limit
+    -2 = limited but undefined
     """
     backers_block = pledge.find('div', {'class': 'pledge__backer-stats'})
     total_backers = backers_block.find('span', {'class': 'pledge__limit'})
@@ -165,7 +178,11 @@ def pledge_total_backers(pledge) -> int:
         log.debug('Pledge total backers: %d', total)
         return total
     # get last number from Limited (2 left of 2)
-    total = int(text.split(' ')[-1][:-1])
+    try: 
+        total = int(text.split(' ')[-1][:-1])
+    except ValueError:
+        total = -2
+
     log.debug('Pledge total backers: %d', total)
     return total
 
@@ -186,57 +203,75 @@ reward_func_map = OrderedDict([('Text',                 pledge_text),
                                ('TotalPossibleBackers', pledge_total_backers)])
 
 
-def crawl() -> str:
+def crawl_project(project: dict) -> OrderedDict:
+    """ Crawls a given project and returns a record dictionary """
+    project_dict: OrderedDict = OrderedDict()
+    project_html: str = requests.get(project_url(project=project)).text
+
+    # parse discover page json
+    for key, func in field_func_map.items():
+        project_dict[key] = func(project=project,
+                                 html=project_html)
+
+    # parse project page
+    project_dict[REWARDS] = OrderedDict()
+    project_dict[REWARDS][REWARD] = list()
+    soup = BeautifulSoup(project_html, 'html.parser')
+    pledges = soup.findAll('div', {'class': 'pledge__info'})
+    for i, pledge_info in enumerate(pledges[1:]):  # ignore the first "give moniez plz ;_;" without reward
+        project_dict[REWARDS][REWARD].append(OrderedDict())
+        reward_dict = project_dict[REWARDS][REWARD][i]
+
+        for key, func in reward_func_map.items():
+            reward_dict[key] = func(pledge_info)
+
+    return project_dict
+
+
+def crawl(num_projects: int):
     """
     Crawls kickstarter and returns a json representation of the technology
     projects found in kickstarter
     """
+    crawled_urls: set = set()
     data_dict: OrderedDict = OrderedDict()
     data_dict[RECORDS] = OrderedDict()
-
-    response = requests.get(LINK)
-    data = json.loads(response.text)
-    log.debug('Json url: %s', response.url)
-
     data_dict[RECORDS][RECORD] = list()
-    for i, project in enumerate(data[PROJECTS]):
-        data_dict[RECORDS][RECORD].append(OrderedDict())
 
-        # get project page
-        project_html = requests.get(project_url(project=project)).text
+    for discover_url in discover_url_iter():
+        response = requests.get(discover_url)
+        data = json.loads(response.text)
+        log.debug('Json url: %s', response.url)
 
-        # parse search page json
-        project_dict = data_dict[RECORDS][RECORD][i]
-        for key, func in field_func_map.items():
-            project_dict[key] = func(project=project,
-                                     html=project_html)
-
-        # parse project page
-        project_dict[REWARDS] = OrderedDict()
-        project_dict[REWARDS][REWARD] = list()
-        soup = BeautifulSoup(project_html, 'html.parser')
-        pledges = soup.findAll('div', {'class': 'pledge__info'})
-        for j, pledge_info in enumerate(pledges):
-            # ignore the first "give moniez plz ;_;" without reward
-            if j == 0:
+        for project in data[PROJECTS]:
+            # check if already crawled project
+            url = project_url(project=project)
+            if url in crawled_urls:
                 continue
-            project_dict[REWARDS][REWARD].append(OrderedDict())
-            reward_dict = project_dict[REWARDS][REWARD][j-1]
+            crawled_urls.add(url)
+            log.info('Crawling %s', url)
 
-            for key, func in reward_func_map.items():
-                reward_dict[key] = func(pledge_info)
+            project_dict = crawl_project(project)
+            data_dict[RECORDS][RECORD].append(project_dict)
+            time.sleep(2)
 
-        #break
-        time.sleep(2)   # don't ddos kickstarter
-    return json.dumps(data_dict, indent=4)
+            if len(crawled_urls) >= num_projects:
+                return json.dumps(data_dict, indent=4)
+        time.sleep(2)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Kickstarter technology projects crawler')
-    parser.add_argument('projects', type=int, nargs=1, help='number of projects to collect')
-    parser.add_argument('output', type=str, nargs=1, help='output file path')
+    parser.add_argument('-n', '--num_projects', type=int, nargs=1, help='number of projects to crawl')
+    parser.add_argument('-o', '--output', type=str, nargs=1, help='output file path')
+    parser.add_argument('--debug', action='store_true', help='enable logging')
+    args = parser.parse_args()
 
-    _data: str = crawl()
+    if args.debug:
+        log.setLevel(logging.DEBUG)
+    else:
+        log.setLevel(logging.INFO)
 
-    with io.open('output.json', 'w') as f:
+    _data: str = crawl(args.num_projects[0])
+    with io.open(args.output[0], 'w') as f:
         f.write(_data)
