@@ -58,6 +58,7 @@ def project_url(**kargs) -> str:
     """ Returns the project url """
     project = kargs['project']
     url = project['urls']['web']['project']
+    url = url[:url.find('?ref')]
     # url = url[:url.find('?')] + '/description'
     log.debug('Got url: %s', url)
     return url
@@ -90,7 +91,7 @@ def project_text(**kargs) -> str:
 def project_pledged(**kargs) -> float:
     """ Returns the dollars pledged to the project """
     project = kargs['project']
-    pledged = project['usd_pledged']
+    pledged = project['converted_pledged_amount']
     log.debug('Got pledged dollars: %s', pledged)
     return float(pledged)
 
@@ -177,7 +178,7 @@ def pledge_total_backers(pledge) -> int:
         log.debug('Pledge total backers: %d', total)
         return total
     # get last number from Limited (2 left of 2)
-    try: 
+    try:
         total = int(text.split(' ')[-1][:-1])
     except ValueError:
         total = -2
