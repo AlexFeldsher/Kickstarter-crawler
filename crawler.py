@@ -1,5 +1,4 @@
 """ Kickstarter crawler """
-import io
 import json
 import time
 from collections import OrderedDict
@@ -218,7 +217,7 @@ def crawl_project(project: dict) -> OrderedDict:
     project_dict[REWARDS][REWARD] = list()
     soup = BeautifulSoup(project_html, 'html.parser')
     pledges = soup.findAll('div', {'class': 'pledge__info'})
-    for i, pledge_info in enumerate(pledges[1:]):  # ignore the first "give moniez plz ;_;" without reward
+    for i, pledge_info in enumerate(pledges[1:]):  # ignore the first pledge without reward
         project_dict[REWARDS][REWARD].append(OrderedDict())
         reward_dict = project_dict[REWARDS][REWARD][i]
 
@@ -228,7 +227,7 @@ def crawl_project(project: dict) -> OrderedDict:
     return project_dict
 
 
-def crawl(num_projects: int):
+def crawl(num_projects: int) -> dict:
     """
     Crawls kickstarter and returns a json representation of the technology
     projects found in kickstarter
@@ -249,15 +248,18 @@ def crawl(num_projects: int):
             if url in crawled_urls:
                 continue
             crawled_urls.add(url)
-            log.info('Crawling %s', url)
+            log.info('%d/%d Crawling %s', len(crawled_urls), num_projects, url)
 
             project_dict = crawl_project(project)
             data_dict[RECORDS][RECORD].append(project_dict)
             time.sleep(2)
 
-            if len(crawled_urls) >= num_projects:
-                return json.dumps(data_dict, indent=4)
+            if len(crawled_urls) == num_projects:
+                break
+        if len(crawled_urls) == num_projects:
+            break
         time.sleep(2)
+    return data_dict
 
 
 if __name__ == '__main__':
@@ -272,6 +274,7 @@ if __name__ == '__main__':
     else:
         log.setLevel(logging.INFO)
 
-    _data: str = crawl(args.num_projects[0])
-    with io.open(args.output[0], 'w') as f:
-        f.write(_data)
+    _data: dict = crawl(args.num_projects[0])
+    with open(args.output[0], 'w', encoding='utf8') as f:
+        json.dump(_data, f, ensure_ascii=False, indent=4)
+        # f.write(_data)
